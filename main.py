@@ -2,13 +2,14 @@ import argparse
 import json
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import anthropic
 
 from chart_agent.chart_input import ChartInput
 from chart_agent.config import CANDLE_CAPABLE_KEYS, load_criteria
 from chart_agent.agents import analyze_chart
-from chart_agent.cv_agent import analyze_chart_cv
+from chart_agent.cv_agent import analyze_chart_cv_annotated
 from chart_agent.orchestrator import synthesize
 from chart_agent.report import render_report, save_report
 
@@ -107,11 +108,18 @@ def main():
     criteria = load_criteria()
     client = anthropic.Anthropic()
 
+    out_path = args.out or f"outputs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    annotated_paths = {}
+
     results = {}
     for key, chart_input in chart_inputs.items():
         if key in CANDLE_CAPABLE_KEYS:
             print(f"[{key}] OpenCV로 분석 중... ({chart_input.kind}, LLM 미사용)")
-            results[key] = analyze_chart_cv(key, criteria[key], chart_input)
+            results[key], annotated_png = analyze_chart_cv_annotated(key, criteria[key], chart_input)
+            if annotated_png:
+                annotated_path = Path(out_path).with_name(Path(out_path).stem + f"_{key}.png")
+                annotated_path.write_bytes(annotated_png)
+                annotated_paths[key] = str(annotated_path)
         else:
             print(f"[{key}] Claude로 분석 중... ({chart_input.kind})")
             results[key] = call_anthropic(
@@ -122,13 +130,14 @@ def main():
     print("종합 판단 생성 중...")
     synthesis = call_anthropic(synthesize, client, results, ticker=args.ticker)
 
-    out_path = args.out or f"outputs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     save_report(results, synthesis, out_path, ticker=args.ticker)
 
     print()
     print(render_report(results, synthesis, ticker=args.ticker))
     print()
     print(f"리포트 저장 완료: {out_path}")
+    for key, path in annotated_paths.items():
+        print(f"[{key}] 동그라미 표시 이미지: {path}")
 
 
 if __name__ == "__main__":

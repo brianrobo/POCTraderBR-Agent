@@ -1,3 +1,4 @@
+import base64
 import os
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -11,7 +12,7 @@ from pydantic import BaseModel
 from chart_agent.agents import analyze_chart
 from chart_agent.chart_input import ChartInput
 from chart_agent.config import CANDLE_CAPABLE_KEYS, TIMEFRAME_KEYS, load_criteria
-from chart_agent.cv_agent import analyze_chart_cv
+from chart_agent.cv_agent import analyze_chart_cv_annotated
 from chart_agent.models import ChartAnalysisResult
 from chart_agent.orchestrator import synthesize
 
@@ -75,7 +76,11 @@ def update_criteria(key: str, body: CriteriaUpdate):
     return {"label": criteria_state[key]["label"], "criteria": criteria_state[key]["criteria"]}
 
 
-@app.post("/api/analyze/{key}", response_model=ChartAnalysisResult)
+class AnalyzeResponse(ChartAnalysisResult):
+    annotated_image_data_url: Optional[str] = None  # 검출 구간에 동그라미 표시한 이미지 (CV 결과일 때만)
+
+
+@app.post("/api/analyze/{key}", response_model=AnalyzeResponse)
 def analyze(key: str, image: UploadFile = File(...), ticker: Optional[str] = Form(None)):
     if key not in TIMEFRAME_KEYS:
         raise HTTPException(status_code=404, detail=f"알 수 없는 타임프레임: {key}")
@@ -88,15 +93,18 @@ def analyze(key: str, image: UploadFile = File(...), ticker: Optional[str] = For
 
     try:
         if key in CANDLE_CAPABLE_KEYS:
-            result = analyze_chart_cv(key, criteria_state[key], chart_input)
+            result, annotated_png = analyze_chart_cv_annotated(key, criteria_state[key], chart_input)
+            annotated_url = None
+            if annotated_png:
+                annotated_url = "data:image/png;base64," + base64.b64encode(annotated_png).decode("ascii")
+            return AnalyzeResponse(**result.model_dump(), annotated_image_data_url=annotated_url)
         else:
             result = call_anthropic(
                 analyze_chart, client, key, criteria_state[key], chart_input, ticker=ticker or None
             )
+            return AnalyzeResponse(**result.model_dump())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-    return result
 
 
 class SynthesizeRequest(BaseModel):

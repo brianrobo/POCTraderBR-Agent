@@ -318,9 +318,11 @@
     else if (c.file) pillHtml = '<span class="pill">분석 대기</span>';
     else pillHtml = '<span class="pill">이미지 대기</span>';
 
+    var annotatedUrl = (c.status === "done" && c.result.annotated_image_data_url) || null;
     var dzInner;
-    if (c.previewUrl) {
-      dzInner = '<img src="' + c.previewUrl + '" alt="' + a.label + ' 차트 미리보기">' +
+    if (annotatedUrl || c.previewUrl) {
+      dzInner = '<img src="' + (annotatedUrl || c.previewUrl) + '" alt="' + a.label + (annotatedUrl ? ' 검출 결과 (동그라미 표시)' : ' 차트 미리보기') + '">' +
+        (annotatedUrl ? '<span class="paste-badge" style="position:absolute;top:6px;left:6px;">검출 결과</span>' : '') +
         '<button type="button" class="replace" data-action="replace">다시 선택</button>';
     } else {
       dzInner = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M12 4 7 9M12 4l5 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" stroke-linecap="round"/></svg>' +

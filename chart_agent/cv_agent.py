@@ -5,7 +5,7 @@ daily/min30/min3는 LLM 대신 이 모듈을 쓴다 (비용 없음, 즉시 결�
 LLM(agents.py)을 쓴다.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from .chart_input import ChartInput
 from .cv_breakout import (
@@ -13,6 +13,7 @@ from .cv_breakout import (
     analyze_image,
     analyze_image_bytes,
     detect_breakouts_from_ohlcv,
+    draw_debug_bytes,
 )
 from .models import ChartAnalysisResult, CriterionSignal
 
@@ -67,27 +68,41 @@ def _build_result(
     )
 
 
-def analyze_chart_cv(
+def analyze_chart_cv_annotated(
     timeframe_key: str, agent_cfg: Dict[str, Any], chart_input: ChartInput
-) -> ChartAnalysisResult:
-    """agents.analyze_chart()와 같은 자리에 쓰는 비-LLM(OpenCV) 버전.
+) -> Tuple[ChartAnalysisResult, Optional[bytes]]:
+    """analyze_chart_cv()와 같지만, 이미지 입력이면 검출 구간에 동그라미를
+    그린 PNG 바이트도 함께 반환한다 (캔들 데이터 입력이면 None).
 
     현재는 criteria.yaml의 첫 번째 기준(가격 상승+거래량 폭증) 전용이다.
     이 기준과 다른 새 기준을 daily/min30/min3에 추가하면 별도 로직이
     필요하다 — agents.analyze_chart()(LLM)로 되돌리거나 새 검출기를 추가.
     """
     criterion_text = agent_cfg["criteria"][0]
+    annotated_png: Optional[bytes] = None
 
     if chart_input.kind == "image":
         if chart_input.image_bytes is not None:
-            _, _, signals, _, _ = analyze_image_bytes(chart_input.image_bytes)
+            candles, volumes, signals, img, baseline_y = analyze_image_bytes(chart_input.image_bytes)
         elif chart_input.image_path:
-            _, _, signals, _, _ = analyze_image(chart_input.image_path)
+            candles, volumes, signals, img, baseline_y = analyze_image(chart_input.image_path)
         else:
             raise ValueError("이미지 데이터가 없습니다.")
+        annotated_png = draw_debug_bytes(img, candles, volumes, signals, baseline_y)
     elif chart_input.kind == "candles":
         signals = detect_breakouts_from_ohlcv(chart_input.candles)
     else:
         raise ValueError(f"알 수 없는 chart_input.kind: {chart_input.kind}")
 
-    return _build_result(timeframe_key, criterion_text, signals)
+    return _build_result(timeframe_key, criterion_text, signals), annotated_png
+
+
+def analyze_chart_cv(
+    timeframe_key: str, agent_cfg: Dict[str, Any], chart_input: ChartInput
+) -> ChartAnalysisResult:
+    """agents.analyze_chart()와 같은 자리에 쓰는 비-LLM(OpenCV) 버전.
+
+    동그라미 표시 이미지가 필요 없을 때 쓰는 간단한 버전.
+    """
+    result, _ = analyze_chart_cv_annotated(timeframe_key, agent_cfg, chart_input)
+    return result

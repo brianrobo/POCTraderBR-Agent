@@ -325,6 +325,31 @@ def detect_breakouts_from_ohlcv(
     )
 
 
+def cluster_signal_indices(signals: List[BreakoutSignal], gap: int = 12) -> List[Tuple[int, int]]:
+    """근처 캔들에서 연달아 나온 신호를 하나의 구간(클러스터)으로 묶는다.
+
+    사용자가 차트를 눈으로 볼 때 "이 부근 전체가 한 번의 거래량 폭증"이라고
+    묶어서 인식하는 것과 맞추기 위함 — 캔들 하나하나에 박스를 그리는 대신
+    구간 전체에 동그라미 하나를 그린다.
+    """
+    idxs = sorted({s.candle_index for s in signals})
+    if not idxs:
+        return []
+    clusters = [[idxs[0], idxs[0]]]
+    for i in idxs[1:]:
+        if i - clusters[-1][1] <= gap:
+            clusters[-1][1] = i
+        else:
+            clusters.append([i, i])
+    return [(s, e) for s, e in clusters]
+
+
+def _draw_ellipse_around(img: np.ndarray, x0: int, y0: int, x1: int, y1: int, pad: int = 10) -> None:
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    ax, ay = (x1 - x0) // 2 + pad, (y1 - y0) // 2 + pad
+    cv2.ellipse(img, (cx, cy), (max(ax, 8), max(ay, 8)), 0, 0, 360, (0, 230, 255), 3)
+
+
 def draw_debug(
     img: np.ndarray,
     candles: List[Candle],
@@ -332,24 +357,55 @@ def draw_debug(
     signals: List[BreakoutSignal],
     baseline_y: int,
     out_path: str,
+    cluster_gap: int = 12,
 ) -> None:
+    """검출된 '가격 상승+거래량 폭증' 구간을 원본 이미지 위에 동그라미로 표시.
+
+    사람이 차트를 보고 손으로 동그라미 치는 것과 같은 방식 — 캔들 쪽 동그라미
+    하나 + 그 아래 거래량 막대 쪽 동그라미 하나를 구간별로 그린다.
+    """
     debug = img.copy()
-    flagged = {s.candle_index for s in signals}
 
-    for c in candles:
-        color = (0, 0, 255) if c.color == "up" else (255, 120, 0)
-        cv2.rectangle(debug, (c.x_start, c.range_top), (c.x_end, c.range_bottom), color, 1)
-        if c.index in flagged:
-            cv2.rectangle(
-                debug,
-                (c.x_start - 2, c.range_top - 6),
-                (c.x_end + 2, baseline_y + 6),
-                (0, 255, 255),
-                2,
-            )
+    for start_idx, end_idx in cluster_signal_indices(signals, gap=cluster_gap):
+        group = candles[start_idx : end_idx + 1]
+        x0 = min(c.x_start for c in group)
+        x1 = max(c.x_end for c in group)
 
-    cv2.line(debug, (0, baseline_y), (debug.shape[1], baseline_y), (0, 255, 0), 1)
+        price_y0 = min(c.range_top for c in group)
+        price_y1 = max(c.range_bottom for c in group)
+        _draw_ellipse_around(debug, x0, price_y0, x1, price_y1, pad=14)
+
+        vol_ys = [baseline_y - volumes[i] for i in range(start_idx, end_idx + 1) if volumes[i] > 0]
+        if vol_ys:
+            _draw_ellipse_around(debug, x0, min(vol_ys), x1, baseline_y, pad=10)
+
     cv2.imwrite(out_path, debug)
+
+
+def draw_debug_bytes(
+    img: np.ndarray,
+    candles: List[Candle],
+    volumes: List[int],
+    signals: List[BreakoutSignal],
+    baseline_y: int,
+    cluster_gap: int = 12,
+) -> bytes:
+    """draw_debug()와 동일하지만 PNG 바이트로 반환 (웹 응답에 바로 embed할 때 사용)"""
+    debug = img.copy()
+    for start_idx, end_idx in cluster_signal_indices(signals, gap=cluster_gap):
+        group = candles[start_idx : end_idx + 1]
+        x0 = min(c.x_start for c in group)
+        x1 = max(c.x_end for c in group)
+        price_y0 = min(c.range_top for c in group)
+        price_y1 = max(c.range_bottom for c in group)
+        _draw_ellipse_around(debug, x0, price_y0, x1, price_y1, pad=14)
+        vol_ys = [baseline_y - volumes[i] for i in range(start_idx, end_idx + 1) if volumes[i] > 0]
+        if vol_ys:
+            _draw_ellipse_around(debug, x0, min(vol_ys), x1, baseline_y, pad=10)
+    ok, buf = cv2.imencode(".png", debug)
+    if not ok:
+        raise ValueError("이미지 인코딩에 실패했습니다.")
+    return buf.tobytes()
 
 
 if __name__ == "__main__":
