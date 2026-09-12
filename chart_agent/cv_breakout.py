@@ -571,12 +571,19 @@ def _add_legend(img: np.ndarray, show_retest: bool) -> np.ndarray:
     font = _get_font(17)
     cy = legend_h // 2
 
-    draw.ellipse((14, cy - 9, 32, cy + 9), outline=(255, 230, 0), width=2)
-    draw.text((40, cy - 10), ": 물량 털기", font=font, fill=(30, 30, 30))
-
+    items = [((255, 230, 0), ": 물량 털기")]
     if show_retest:
-        draw.ellipse((170, cy - 9, 188, cy + 9), outline=(255, 140, 0), width=2)
-        draw.text((196, cy - 10), ": 재접근 후 하락", font=font, fill=(30, 30, 30))
+        items.append(((255, 140, 0), ": 재접근 후 하락"))
+
+    circle_d, gap_after_circle, gap_between = 18, 8, 20
+    right_margin = 20
+    widths = [circle_d + gap_after_circle + draw.textlength(text, font=font) for _, text in items]
+    x = w - right_margin - (sum(widths) + gap_between * (len(items) - 1))
+
+    for (color, text), item_w in zip(items, widths):
+        draw.ellipse((x, cy - 9, x + circle_d, cy + 9), outline=color, width=2)
+        draw.text((x + circle_d + gap_after_circle, cy - 10), text, font=font, fill=(30, 30, 30))
+        x += item_w + gap_between
 
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
