@@ -344,10 +344,12 @@ def cluster_signal_indices(signals: List[BreakoutSignal], gap: int = 12) -> List
     return [(s, e) for s, e in clusters]
 
 
-def _draw_ellipse_around(img: np.ndarray, x0: int, y0: int, x1: int, y1: int, pad: int = 10) -> None:
+def _draw_ellipse_around(
+    img: np.ndarray, x0: int, y0: int, x1: int, y1: int, pad: int = 10, thickness: int = 2
+) -> None:
     cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
     ax, ay = (x1 - x0) // 2 + pad, (y1 - y0) // 2 + pad
-    cv2.ellipse(img, (cx, cy), (max(ax, 8), max(ay, 8)), 0, 0, 360, (0, 230, 255), 3)
+    cv2.ellipse(img, (cx, cy), (max(ax, 8), max(ay, 8)), 0, 0, 360, (0, 230, 255), thickness)
 
 
 def draw_debug(
