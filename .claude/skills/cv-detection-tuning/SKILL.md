@@ -25,8 +25,11 @@ description: Use this skill whenever changing pixel-level detection logic in cha
 4. 사용자가 실제로 보면서 맞는지 확인(또는 특정 지점을 짚어서 반박)하게
    한다 — 사용자는 종종 같은 캡처 위에 직접 손으로 동그라미를 그려서
    기대하는 결과를 보여준다.
-5. 시각적으로 맞다고 확인된 뒤에만 커밋한다 (커밋 후에는
-   `update-history-log` 스킬에 따라 `HISTORY.md`도 갱신).
+5. 시각적으로 맞다고 확인된 뒤에만 커밋한다. 커밋 후에는
+   `update-history-log` 스킬에 따라 `HISTORY.md`도 갱신하고, 변경한
+   내용이 [DOMAIN.md](../../../DOMAIN.md)에 적힌 설명과 어긋나게 됐다면
+   그 문서도 같이 고친다 (실제로 한 번, 음봉 포함 수정 후 문서를 안
+   고쳐서 어긋난 채로 남아있었던 적이 있다 — 커밋 `576d32c`).
 
 ## 왜 이렇게 하는가
 
