@@ -17,6 +17,20 @@ from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+KOREAN_FONT_PATH = "C:/Windows/Fonts/malgun.ttf"
+_FONT_CACHE = {}
+
+
+def _get_font(size: int):
+    """cv2.putText는 한글을 못 그려서(깨짐) Pillow로 범례 텍스트를 렌더링한다."""
+    if size not in _FONT_CACHE:
+        try:
+            _FONT_CACHE[size] = ImageFont.truetype(KOREAN_FONT_PATH, size)
+        except OSError:
+            _FONT_CACHE[size] = ImageFont.load_default()
+    return _FONT_CACHE[size]
 
 
 def _median(values: List[float]) -> float:
@@ -542,6 +556,31 @@ def find_significant_volume_points(
     return merged
 
 
+def _add_legend(img: np.ndarray, show_retest: bool) -> np.ndarray:
+    """이미지 맨 위에 마크 설명을 붙인다 (한글이라 Pillow로 렌더링).
+
+    기존 내용을 가리지 않도록 캔버스 자체를 위로 늘려서 그 여백에 그린다.
+    """
+    legend_h = 40
+    h, w = img.shape[:2]
+    canvas = np.full((h + legend_h, w, 3), 255, dtype=np.uint8)
+    canvas[legend_h:, :] = img
+
+    pil_img = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+    font = _get_font(17)
+    cy = legend_h // 2
+
+    draw.ellipse((14, cy - 9, 32, cy + 9), outline=(255, 230, 0), width=2)
+    draw.text((40, cy - 10), ": 물량 털기", font=font, fill=(30, 30, 30))
+
+    if show_retest:
+        draw.ellipse((170, cy - 9, 188, cy + 9), outline=(255, 140, 0), width=2)
+        draw.text((196, cy - 10), ": 재접근 후 하락", font=font, fill=(30, 30, 30))
+
+    return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+
 def _render_annotations(
     img: np.ndarray,
     candles: List[Candle],
@@ -549,7 +588,7 @@ def _render_annotations(
     signals: List[BreakoutSignal],
     baseline_y: int,
     cluster_gap: int,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, bool]:
     debug = img.copy()
     clusters = cluster_signal_indices(signals, gap=cluster_gap)
     retests = detect_retest_and_reject(candles, volumes, clusters)
@@ -577,7 +616,7 @@ def _render_annotations(
                 debug, r.x_start, r.range_top, r.x_end, r.range_bottom, pad=8, color=(0, 140, 255)
             )
 
-    return debug
+    return debug, bool(retests)
 
 
 def draw_debug(
@@ -593,9 +632,10 @@ def draw_debug(
 
     구간별 최대 거래량 캔들(실제 물량이 터진 가격)에 작은 동그라미를 치고,
     그 가격대를 이후에 다시 찍고 내려가는 재접근-하락 정황이 있으면 주황색
-    동그라미와 연결선으로 함께 표시한다.
+    동그라미와 연결선으로 함께 표시한다. 맨 위에는 마크 범례를 붙인다.
     """
-    debug = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
+    debug, has_retest = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
+    debug = _add_legend(debug, has_retest)
     cv2.imwrite(out_path, debug)
 
 
@@ -608,7 +648,8 @@ def draw_debug_bytes(
     cluster_gap: int = 12,
 ) -> bytes:
     """draw_debug()와 동일하지만 PNG 바이트로 반환 (웹 응답에 바로 embed할 때 사용)"""
-    debug = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
+    debug, has_retest = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
+    debug = _add_legend(debug, has_retest)
     ok, buf = cv2.imencode(".png", debug)
     if not ok:
         raise ValueError("이미지 인코딩에 실패했습니다.")
