@@ -556,7 +556,7 @@ def find_significant_volume_points(
     return merged
 
 
-def _add_legend(img: np.ndarray, show_retest: bool) -> np.ndarray:
+def _add_legend(img: np.ndarray, show_retest: bool, show_accum: bool) -> np.ndarray:
     """이미지 맨 위에 마크 설명을 붙인다 (한글이라 Pillow로 렌더링).
 
     기존 내용을 가리지 않도록 캔버스 자체를 위로 늘려서 그 여백에 그린다.
@@ -571,21 +571,97 @@ def _add_legend(img: np.ndarray, show_retest: bool) -> np.ndarray:
     font = _get_font(17)
     cy = legend_h // 2
 
-    items = [((255, 230, 0), ": 물량 털기")]
+    items = [("circle", (255, 230, 0), ": 물량 털기")]
     if show_retest:
-        items.append(((255, 140, 0), ": 재접근 후 하락"))
+        items.append(("circle", (255, 140, 0), ": 재접근 후 하락"))
+    if show_accum:
+        items.append(("box", (0, 160, 200), ": 매집 구간"))
 
-    circle_d, gap_after_circle, gap_between = 18, 8, 20
+    icon_d, gap_after_icon, gap_between = 18, 8, 20
     right_margin = 20
-    widths = [circle_d + gap_after_circle + draw.textlength(text, font=font) for _, text in items]
+    widths = [icon_d + gap_after_icon + draw.textlength(text, font=font) for _, _, text in items]
     x = w - right_margin - (sum(widths) + gap_between * (len(items) - 1))
 
-    for (color, text), item_w in zip(items, widths):
-        draw.ellipse((x, cy - 9, x + circle_d, cy + 9), outline=color, width=2)
-        draw.text((x + circle_d + gap_after_circle, cy - 10), text, font=font, fill=(30, 30, 30))
+    for (shape, color, text), item_w in zip(items, widths):
+        if shape == "circle":
+            draw.ellipse((x, cy - 9, x + icon_d, cy + 9), outline=color, width=2)
+        else:
+            draw.rectangle((x, cy - 7, x + icon_d, cy + 7), outline=color, width=2)
+        draw.text((x + icon_d + gap_after_icon, cy - 10), text, font=font, fill=(30, 30, 30))
         x += item_w + gap_between
 
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+
+@dataclass
+class AccumulationZone:
+    """물량 폭증(매집 완료 후 상승) 직전의 좁은 횡보 구간 — 항목 3(세력의
+    매집 구간) 1차 구현. 폭발이 시작되는 캔들 바로 앞에서부터 거꾸로,
+    가격이 좁은 밴드 안에 머무는 동안 계속 넓혀가다가 밴드를 벗어나면
+    멈춘다. 저가 구간뿐 아니라 1차 상승 후 고점 부근의 눌림목도 같은
+    방식으로 잡힌다 — 가격대가 아니라 '폭이 좁은지'만 본다.
+    """
+
+    start_index: int
+    end_index: int  # inclusive, burst_start - 1
+
+
+def find_accumulation_zone(
+    candles: List[Candle],
+    volumes: List[float],
+    burst_start: int,
+    boundary: int,
+    peak_volume: float,
+    quiet_frac: float = 0.2,
+    min_length: int = 5,
+    max_length: int = 40,
+    single_candle_range_frac: float = 0.2,
+) -> Optional[AccumulationZone]:
+    """'거래량이 아직 낮게 유지되는지'로 매집 구간을 잡는다 (가격 자체의
+    폭이 아니라).
+
+    사용자 피드백: 매집 구간은 가격이 완만하게 우상향해도(횡보가 아니어도)
+    거래량만 낮게 유지되면 하나의 매집 구간으로 본다. 처음엔 누적 가격 폭
+    기준을 썼는데, 실제 사례에서 진짜 돌파 직전 완만한 상승 구간이 가격
+    폭 기준에 걸려 통째로 빠지는 문제가 있어서 거래량 기준으로 바꿨다.
+
+    다만 거래량만 보면, 거래량은 적은데 캔들 하나가 유난히 큰 폭으로
+    움직인 경우(예: 직전 급등의 되돌림으로 하루 만에 크게 빠지는 캔들)까지
+    "조용하다"고 잘못 포함시켜서 매집 구간 박스가 그 캔들 높이만큼 세로로
+    커져버리는 문제가 있었다 — 그래서 캔들 하나의 고가-저가 폭이 전체
+    차트 높이 대비 너무 크면(single_candle_range_frac) 거래량과 상관없이
+    "아직 조용하지 않다"고 보고 거기서 구간을 끊는다.
+    """
+    if burst_start - 1 < boundary:
+        return None
+
+    pane_top = min(c.range_top for c in candles)
+    pane_bottom = max(c.range_bottom for c in candles)
+    max_single_range = (pane_bottom - pane_top) * single_candle_range_frac
+    quiet_threshold = peak_volume * quiet_frac
+
+    def _is_quiet(idx: int) -> bool:
+        c = candles[idx]
+        return volumes[idx] <= quiet_threshold and (c.range_bottom - c.range_top) <= max_single_range
+
+    earliest = max(boundary, burst_start - max_length)
+    i = burst_start - 1
+    start = i
+    while i - 1 >= earliest and _is_quiet(i - 1):
+        i -= 1
+        start = i
+
+    if burst_start - start < min_length:
+        return None
+    return AccumulationZone(start_index=start, end_index=burst_start - 1)
+
+
+def _draw_zone_box(
+    img: np.ndarray, x0: int, y0: int, x1: int, y1: int, pad_x: int = -3, pad_y: int = 6
+) -> None:
+    # 가로 여백은 세로보다 훨씬 작게 — 캔들 사이 간격이 보통 4~5px밖에 안 돼서,
+    # 넉넉한 여백을 주면 바로 다음(제외해야 할) 장대양봉을 살짝 덮어버린다.
+    cv2.rectangle(img, (x0 - pad_x, y0 - pad_y), (x1 + pad_x, y1 + pad_y), (200, 160, 0), 2, cv2.LINE_AA)
 
 
 def _render_annotations(
@@ -595,14 +671,52 @@ def _render_annotations(
     signals: List[BreakoutSignal],
     baseline_y: int,
     cluster_gap: int,
-) -> Tuple[np.ndarray, bool]:
+) -> Tuple[np.ndarray, bool, bool]:
     debug = img.copy()
-    clusters = cluster_signal_indices(signals, gap=cluster_gap)
-    retests = detect_retest_and_reject(candles, volumes, clusters)
+    raw_clusters = cluster_signal_indices(signals, gap=cluster_gap)
+    extended_clusters = [
+        (s, extend_cluster_to_breakdown(candles, volumes, s, e)) for s, e in raw_clusters
+    ]
+    retests = detect_retest_and_reject(candles, volumes, raw_clusters)
     retest_by_peak = {r.peak_index: r for r in retests}
 
-    for raw_start, raw_end in clusters:
-        start_idx, end_idx = raw_start, extend_cluster_to_breakdown(candles, volumes, raw_start, raw_end)
+    has_accum = False
+    prev_end = 0
+    for start_idx, end_idx in extended_clusters:
+        # 매집 구간의 끝 경계는 "거래대금이 터지며 가격이 오른 장대양봉
+        # 나오기 바로 전"이어야 한다 (사용자 확인) — 장대양봉 자체(그리고
+        # 그 직후 붙어있는 또 다른 장대양봉까지)는 매집이 아니다.
+        #
+        # find_significant_volume_points()는 "동그라미 표시" 용도로 바로
+        # 붙어있는 지점을 하나로 합치는데(예: 47·48번이 둘 다 큰 장대양봉인데
+        # 47은 48에 합쳐져 사라짐), 그 합쳐진 결과를 여기 쓰면 47번이
+        # 매집 구간에 잘못 포함된다. 그래서 병합 없이 직접 "그 구간 최대
+        # 거래량의 35% 이상인 양봉"을 전부 찾아 그중 가장 이른 캔들을
+        # 기준으로 삼는다. (양봉이 하나도 없으면 클러스터의 첫 신호
+        # 캔들(start_idx)로 폴백 — detect_breakouts()는 항상 양봉만
+        # 신호로 잡으므로 안전하다.)
+        peak_idx = find_peak_index(candles, volumes, start_idx, end_idx)
+        peak_volume = volumes[peak_idx]
+        threshold = peak_volume * 0.35
+        up_candidates = [
+            i for i in range(start_idx, end_idx + 1)
+            if candles[i].color == "up" and volumes[i] >= threshold
+        ]
+        ramp_start = min(up_candidates) if up_candidates else start_idx
+        zone = find_accumulation_zone(candles, volumes, ramp_start, prev_end, peak_volume)
+        if zone:
+            has_accum = True
+            group = candles[zone.start_index : zone.end_index + 1]
+            _draw_zone_box(
+                debug,
+                min(c.x_start for c in group),
+                min(c.range_top for c in group),
+                max(c.x_end for c in group),
+                max(c.range_bottom for c in group),
+            )
+        prev_end = end_idx + 1
+
+    for start_idx, end_idx in extended_clusters:
         peak_idx = find_peak_index(candles, volumes, start_idx, end_idx)
 
         for i in find_significant_volume_points(candles, volumes, start_idx, end_idx):
@@ -623,7 +737,7 @@ def _render_annotations(
                 debug, r.x_start, r.range_top, r.x_end, r.range_bottom, pad=8, color=(0, 140, 255)
             )
 
-    return debug, bool(retests)
+    return debug, bool(retests), has_accum
 
 
 def draw_debug(
@@ -641,8 +755,8 @@ def draw_debug(
     그 가격대를 이후에 다시 찍고 내려가는 재접근-하락 정황이 있으면 주황색
     동그라미와 연결선으로 함께 표시한다. 맨 위에는 마크 범례를 붙인다.
     """
-    debug, has_retest = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
-    debug = _add_legend(debug, has_retest)
+    debug, has_retest, has_accum = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
+    debug = _add_legend(debug, has_retest, has_accum)
     cv2.imwrite(out_path, debug)
 
 
@@ -655,8 +769,8 @@ def draw_debug_bytes(
     cluster_gap: int = 12,
 ) -> bytes:
     """draw_debug()와 동일하지만 PNG 바이트로 반환 (웹 응답에 바로 embed할 때 사용)"""
-    debug, has_retest = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
-    debug = _add_legend(debug, has_retest)
+    debug, has_retest, has_accum = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
+    debug = _add_legend(debug, has_retest, has_accum)
     ok, buf = cv2.imencode(".png", debug)
     if not ok:
         raise ValueError("이미지 인코딩에 실패했습니다.")
