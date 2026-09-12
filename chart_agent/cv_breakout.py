@@ -345,11 +345,131 @@ def cluster_signal_indices(signals: List[BreakoutSignal], gap: int = 12) -> List
 
 
 def _draw_ellipse_around(
-    img: np.ndarray, x0: int, y0: int, x1: int, y1: int, pad: int = 10, thickness: int = 2
+    img: np.ndarray, x0: int, y0: int, x1: int, y1: int, pad: int = 10, thickness: int = 2,
+    color: Tuple[int, int, int] = (0, 230, 255),
 ) -> None:
     cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
     ax, ay = (x1 - x0) // 2 + pad, (y1 - y0) // 2 + pad
-    cv2.ellipse(img, (cx, cy), (max(ax, 8), max(ay, 8)), 0, 0, 360, (0, 230, 255), thickness)
+    cv2.ellipse(img, (cx, cy), (max(ax, 8), max(ay, 8)), 0, 0, 360, color, thickness)
+
+
+def find_peak_index(candles: List[Candle], volumes: List[float], start: int, end: int) -> int:
+    """구간(start~end) 안에서 거래량이 가장 큰 캔들 — '실제로 물량이 터진 가격'."""
+    return max(range(start, end + 1), key=lambda i: volumes[i])
+
+
+@dataclass
+class RetestSignal:
+    """물량이 터진 가격대를 이후에 다시 찍고(재상승) 내려간(하락) 정황.
+
+    개미들에게 '본전' 근처까지 가격을 다시 올려줘서 물량을 던지게 만들고
+    (매집), 그 직후 가격이 다시 빠지는 패턴 — 첫 거래량 폭증만으로는 알 수
+    없고, 그 뒤 캔들들을 봐야 확인된다.
+    """
+
+    peak_index: int
+    retest_index: int
+    decline_index: int
+
+
+def detect_retest_and_reject(
+    candles: List[Candle],
+    volumes: List[float],
+    clusters: List[Tuple[int, int]],
+    pullback_frac: float = 0.03,
+    tolerance_frac: float = 0.02,
+    max_lookahead: int = 90,
+    decline_window: int = 15,
+) -> List[RetestSignal]:
+    """각 물량 폭증 구간(cluster)의 최대 거래량 캔들(peak) 가격대를,
+    이후 캔들이 (한 번 눌렸다가) 다시 찍고 나서 내려가는지 확인한다.
+
+    픽셀 y좌표만 있고 실제 가격 축 눈금은 모르므로, 캔들 창 전체 높이에 대한
+    비율로 '의미 있는 되돌림 폭(pullback_frac)'과 '같은 가격대로 볼 허용
+    오차(tolerance_frac)'를 정한다.
+    """
+    if not candles:
+        return []
+
+    pane_top = min(c.range_top for c in candles)
+    pane_bottom = max(c.range_bottom for c in candles)
+    pane_height = max(pane_bottom - pane_top, 1)
+    min_move = max(pane_height * pullback_frac, 5)
+    tol = max(pane_height * tolerance_frac, 4)
+
+    results = []
+    for start, end in clusters:
+        peak_idx = find_peak_index(candles, volumes, start, end)
+        # 기준 가격은 거래량 최대 캔들의 몸통이 아니라, 그 구간에서 실제로
+        # 찍은 최고가('가격 상단' = 전고 돌파 지점) — 변동성이 거기서 나온다는
+        # 사용자 설명 반영.
+        zone_level = min(candles[i].range_top for i in range(start, end + 1))
+        zone_top = zone_bottom = zone_level
+
+        pulled_back = False
+        retest_idx = None
+        limit = min(end + 1 + max_lookahead, len(candles))
+        for j in range(end + 1, limit):
+            c = candles[j]
+            if not pulled_back:
+                if c.body_bottom > zone_bottom + min_move:  # 가격이 그 가격대 아래로 확실히 빠짐
+                    pulled_back = True
+                continue
+            if zone_top - tol <= c.range_top <= zone_bottom + tol:  # 그 가격대를 다시 찍음
+                retest_idx = j
+                break
+
+        if retest_idx is None:
+            continue
+
+        retest_low = candles[retest_idx].range_bottom
+        decline_idx = None
+        limit2 = min(retest_idx + 1 + decline_window, len(candles))
+        for k in range(retest_idx + 1, limit2):
+            if candles[k].body_top > retest_low - min_move * 0.3:  # 재접근 캔들의 저가 밑으로 이탈
+                decline_idx = k
+                break
+
+        if decline_idx is not None:
+            results.append(RetestSignal(peak_index=peak_idx, retest_index=retest_idx, decline_index=decline_idx))
+
+    return results
+
+
+def _render_annotations(
+    img: np.ndarray,
+    candles: List[Candle],
+    volumes: List[float],
+    signals: List[BreakoutSignal],
+    baseline_y: int,
+    cluster_gap: int,
+) -> np.ndarray:
+    debug = img.copy()
+    clusters = cluster_signal_indices(signals, gap=cluster_gap)
+    retests = detect_retest_and_reject(candles, volumes, clusters)
+    retest_by_peak = {r.peak_index: r for r in retests}
+
+    for start_idx, end_idx in clusters:
+        peak_idx = find_peak_index(candles, volumes, start_idx, end_idx)
+        peak = candles[peak_idx]
+
+        _draw_ellipse_around(debug, peak.x_start, peak.body_top, peak.x_end, peak.body_bottom, pad=8)
+        vol_top = baseline_y - volumes[peak_idx]
+        if volumes[peak_idx] > 0:
+            _draw_ellipse_around(debug, peak.x_start, vol_top, peak.x_end, baseline_y, pad=6)
+
+        retest = retest_by_peak.get(peak_idx)
+        if retest:
+            r = candles[retest.retest_index]
+            zone_y = min(c.range_top for c in candles[start_idx : end_idx + 1])
+            cv2.line(
+                debug, (peak.x_end, zone_y), (r.x_start, zone_y), (0, 165, 255), 1, cv2.LINE_AA
+            )
+            _draw_ellipse_around(
+                debug, r.x_start, r.range_top, r.x_end, r.range_bottom, pad=8, color=(0, 140, 255)
+            )
+
+    return debug
 
 
 def draw_debug(
@@ -363,24 +483,11 @@ def draw_debug(
 ) -> None:
     """검출된 '물량 털기'(가격 상승+거래량 폭증) 의심 구간을 원본 이미지 위에 동그라미로 표시.
 
-    사람이 차트를 보고 손으로 동그라미 치는 것과 같은 방식 — 캔들 쪽 동그라미
-    하나 + 그 아래 거래량 막대 쪽 동그라미 하나를 구간별로 그린다.
+    구간별 최대 거래량 캔들(실제 물량이 터진 가격)에 작은 동그라미를 치고,
+    그 가격대를 이후에 다시 찍고 내려가는 재접근-하락 정황이 있으면 주황색
+    동그라미와 연결선으로 함께 표시한다.
     """
-    debug = img.copy()
-
-    for start_idx, end_idx in cluster_signal_indices(signals, gap=cluster_gap):
-        group = candles[start_idx : end_idx + 1]
-        x0 = min(c.x_start for c in group)
-        x1 = max(c.x_end for c in group)
-
-        price_y0 = min(c.range_top for c in group)
-        price_y1 = max(c.range_bottom for c in group)
-        _draw_ellipse_around(debug, x0, price_y0, x1, price_y1, pad=14)
-
-        vol_ys = [baseline_y - volumes[i] for i in range(start_idx, end_idx + 1) if volumes[i] > 0]
-        if vol_ys:
-            _draw_ellipse_around(debug, x0, min(vol_ys), x1, baseline_y, pad=10)
-
+    debug = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
     cv2.imwrite(out_path, debug)
 
 
@@ -393,17 +500,7 @@ def draw_debug_bytes(
     cluster_gap: int = 12,
 ) -> bytes:
     """draw_debug()와 동일하지만 PNG 바이트로 반환 (웹 응답에 바로 embed할 때 사용)"""
-    debug = img.copy()
-    for start_idx, end_idx in cluster_signal_indices(signals, gap=cluster_gap):
-        group = candles[start_idx : end_idx + 1]
-        x0 = min(c.x_start for c in group)
-        x1 = max(c.x_end for c in group)
-        price_y0 = min(c.range_top for c in group)
-        price_y1 = max(c.range_bottom for c in group)
-        _draw_ellipse_around(debug, x0, price_y0, x1, price_y1, pad=14)
-        vol_ys = [baseline_y - volumes[i] for i in range(start_idx, end_idx + 1) if volumes[i] > 0]
-        if vol_ys:
-            _draw_ellipse_around(debug, x0, min(vol_ys), x1, baseline_y, pad=10)
+    debug = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
     ok, buf = cv2.imencode(".png", debug)
     if not ok:
         raise ValueError("이미지 인코딩에 실패했습니다.")

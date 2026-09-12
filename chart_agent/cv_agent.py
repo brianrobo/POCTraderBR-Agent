@@ -10,9 +10,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from .chart_input import ChartInput
 from .cv_breakout import (
     BreakoutSignal,
+    Candle,
+    RetestSignal,
     analyze_image,
     analyze_image_bytes,
+    cluster_signal_indices,
     detect_breakouts_from_ohlcv,
+    detect_retest_and_reject,
     draw_debug_bytes,
 )
 from .models import ChartAnalysisResult, CriterionSignal
@@ -37,16 +41,45 @@ def _signal_to_criterion_signal(sig: BreakoutSignal, criterion_text: str) -> Cri
     )
 
 
+def _retest_to_criterion_signal(
+    r: RetestSignal, candles: List[Candle], total_candles: int
+) -> CriterionSignal:
+    peak, retest, decline = candles[r.peak_index], candles[r.retest_index], candles[r.decline_index]
+    return CriterionSignal(
+        criterion="물량 털기 정황: 거래량이 터진 가격대를 이후에 다시 찍고 하락 (개미 물량 흡수 추정)",
+        found=True,
+        evidence=(
+            f"{peak.index + 1}번째 캔들(거래량 폭증 지점)의 가격대를 "
+            f"{retest.index + 1}번째 캔들에서 재접근했다가 "
+            f"{decline.index + 1}번째 캔들에서 그 밑으로 하락 (전체 {total_candles}개 중)"
+        ),
+        price_move_desc="재접근 캔들의 저가 밑으로 하락 마감 — 해당 가격대에서 매물 소화 후 이탈 정황",
+        volume_move_desc="-",
+        confidence="medium",
+    )
+
+
 def _build_result(
-    timeframe_key: str, criterion_text: str, signals: List[BreakoutSignal]
+    timeframe_key: str,
+    criterion_text: str,
+    signals: List[BreakoutSignal],
+    candles: Optional[List[Candle]] = None,
+    retests: Optional[List[RetestSignal]] = None,
 ) -> ChartAnalysisResult:
+    retests = retests or []
     if signals:
         criterion_signals = [_signal_to_criterion_signal(s, criterion_text) for s in signals]
+        if candles is not None:
+            criterion_signals += [
+                _retest_to_criterion_signal(r, candles, len(candles)) for r in retests
+            ]
         positions = sorted({s.position_desc for s in signals}, key=["과거", "중간", "최근"].index)
         comment = (
             f"OpenCV 분석 결과 총 {len(signals)}개 구간에서 물량 털기 의심 신호가 "
             f"발견되었습니다 ({', '.join(positions)})."
         )
+        if retests:
+            comment += f" 이 중 {len(retests)}개 구간은 이후 가격대 재접근 후 하락까지 확인됐습니다."
     else:
         criterion_signals = [
             CriterionSignal(
@@ -90,12 +123,16 @@ def analyze_chart_cv_annotated(
         else:
             raise ValueError("이미지 데이터가 없습니다.")
         annotated_png = draw_debug_bytes(img, candles, volumes, signals, baseline_y)
+        clusters = cluster_signal_indices(signals)
+        retests = detect_retest_and_reject(candles, volumes, clusters)
+        return _build_result(timeframe_key, criterion_text, signals, candles, retests), annotated_png
     elif chart_input.kind == "candles":
         signals = detect_breakouts_from_ohlcv(chart_input.candles)
+        # TODO: 재접근-하락(물량 털기) 판정은 아직 이미지 경로만 지원. 캔들 데이터 경로는
+        # 실제 가격 단위로 같은 로직을 다시 짜야 함 (부호/방향이 픽셀 y좌표와 반대).
+        return _build_result(timeframe_key, criterion_text, signals), annotated_png
     else:
         raise ValueError(f"알 수 없는 chart_input.kind: {chart_input.kind}")
-
-    return _build_result(timeframe_key, criterion_text, signals), annotated_png
 
 
 def analyze_chart_cv(
