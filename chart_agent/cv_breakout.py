@@ -344,6 +344,37 @@ def cluster_signal_indices(signals: List[BreakoutSignal], gap: int = 12) -> List
     return [(s, e) for s, e in clusters]
 
 
+def extend_cluster_to_breakdown(
+    candles: List[Candle], volumes: List[float], start: int, end: int, pullback_frac: float = 0.03
+) -> int:
+    """클러스터 끝을, 개별 캔들 신호 기준이 아니라 '가격이 이 구간의 폭발
+    캔들 시가 아래로 확실히 무너지기 전'까지로 늘린다.
+
+    예: 제일 크게 터진 캔들 옆에 그보다 작지만(예: 절반 정도) 여전히 큰
+    거래량 캔들이 붙어 있으면, 그 캔들 개별로는 신호 임계값을 못 넘겨도
+    같은 물량 털기 구간으로 봐야 한다 — 가격이 아직 그 구간을 벗어나지
+    않았기 때문.
+
+    기준선은 (클러스터 전체가 아니라) 거래량이 가장 큰 캔들 하나의 시가로
+    고정한다 — 클러스터에 섞여 들어온, 훨씬 이전의 작은 신호까지 포함해서
+    평균/최저를 잡으면 기준선이 너무 낮아져 구간이 끝없이 늘어난다.
+    """
+    pane_top = min(c.range_top for c in candles)
+    pane_bottom = max(c.range_bottom for c in candles)
+    min_move = max((pane_bottom - pane_top) * pullback_frac, 5)
+
+    peak_idx = find_peak_index(candles, volumes, start, end)
+    zone_low = candles[peak_idx].body_bottom
+    e = max(end, peak_idx)
+    n = len(candles)
+    while e + 1 < n:
+        nxt = candles[e + 1]
+        if nxt.body_bottom > zone_low + min_move:
+            break  # 가격이 폭발 캔들 시가 아래로 확실히 무너짐 — 여기서 구간 종료
+        e += 1
+    return e
+
+
 def _draw_ellipse_around(
     img: np.ndarray, x0: int, y0: int, x1: int, y1: int, pad: int = 10, thickness: int = 2,
     color: Tuple[int, int, int] = (0, 230, 255),
@@ -398,7 +429,8 @@ def detect_retest_and_reject(
     tol = max(pane_height * tolerance_frac, 4)
 
     results = []
-    for start, end in clusters:
+    for raw_start, raw_end in clusters:
+        start, end = raw_start, extend_cluster_to_breakdown(candles, volumes, raw_start, raw_end, pullback_frac)
         peak_idx = find_peak_index(candles, volumes, start, end)
         # 기준 가격은 거래량 최대 캔들의 몸통이 아니라, 그 구간에서 실제로
         # 찍은 최고가('가격 상단' = 전고 돌파 지점) — 변동성이 거기서 나온다는
@@ -436,6 +468,40 @@ def detect_retest_and_reject(
     return results
 
 
+def find_significant_volume_points(
+    candles: List[Candle],
+    volumes: List[float],
+    start: int,
+    end: int,
+    min_frac_of_peak: float = 0.35,
+    merge_gap: int = 1,
+) -> List[int]:
+    """구간(extend_cluster_to_breakdown로 늘린 범위) 안에서 '따로 표시할 만큼
+    큰' 거래량 지점을 전부 찾는다 — 제일 큰 것 하나만이 아니라, 그 옆에 붙은
+    절반 정도 크기의 캔들도 별도 매집 지점으로 봐야 한다는 사용자 설명 반영.
+
+    같은 급등이 이틀에 걸쳐 찍힌 것처럼 바로 붙어있는 지점(merge_gap 이내)은
+    거래량이 더 큰 쪽 하나로 합친다.
+    """
+    up_idxs = [i for i in range(start, end + 1) if candles[i].color == "up"]
+    if not up_idxs:
+        return []
+    peak_vol = max(volumes[i] for i in range(start, end + 1))
+    if peak_vol <= 0:
+        return []
+    threshold = peak_vol * min_frac_of_peak
+    candidates = sorted(i for i in up_idxs if volumes[i] >= threshold)
+
+    merged: List[int] = []
+    for i in candidates:
+        if merged and i - merged[-1] <= merge_gap:
+            if volumes[i] > volumes[merged[-1]]:
+                merged[-1] = i
+        else:
+            merged.append(i)
+    return merged
+
+
 def _render_annotations(
     img: np.ndarray,
     candles: List[Candle],
@@ -449,22 +515,22 @@ def _render_annotations(
     retests = detect_retest_and_reject(candles, volumes, clusters)
     retest_by_peak = {r.peak_index: r for r in retests}
 
-    for start_idx, end_idx in clusters:
+    for raw_start, raw_end in clusters:
+        start_idx, end_idx = raw_start, extend_cluster_to_breakdown(candles, volumes, raw_start, raw_end)
         peak_idx = find_peak_index(candles, volumes, start_idx, end_idx)
-        peak = candles[peak_idx]
 
-        _draw_ellipse_around(debug, peak.x_start, peak.body_top, peak.x_end, peak.body_bottom, pad=8)
-        vol_top = baseline_y - volumes[peak_idx]
-        if volumes[peak_idx] > 0:
-            _draw_ellipse_around(debug, peak.x_start, vol_top, peak.x_end, baseline_y, pad=6)
+        for i in find_significant_volume_points(candles, volumes, start_idx, end_idx):
+            c = candles[i]
+            _draw_ellipse_around(debug, c.x_start, c.body_top, c.x_end, c.body_bottom, pad=8)
+            if volumes[i] > 0:
+                vol_top = baseline_y - volumes[i]
+                _draw_ellipse_around(debug, c.x_start, vol_top, c.x_end, baseline_y, pad=6)
 
         retest = retest_by_peak.get(peak_idx)
         if retest:
             r = candles[retest.retest_index]
-            zone_y = min(c.range_top for c in candles[start_idx : end_idx + 1])
-            cv2.line(
-                debug, (peak.x_end, zone_y), (r.x_start, zone_y), (0, 165, 255), 1, cv2.LINE_AA
-            )
+            zone_y = min(candles[i].range_top for i in range(start_idx, end_idx + 1))
+            cv2.line(debug, (candles[end_idx].x_end, zone_y), (r.x_start, zone_y), (0, 165, 255), 1, cv2.LINE_AA)
             _draw_ellipse_around(
                 debug, r.x_start, r.range_top, r.x_end, r.range_bottom, pad=8, color=(0, 140, 255)
             )
