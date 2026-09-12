@@ -519,17 +519,18 @@ def find_significant_volume_points(
     큰' 거래량 지점을 전부 찾는다 — 제일 큰 것 하나만이 아니라, 그 옆에 붙은
     절반 정도 크기의 캔들도 별도 매집 지점으로 봐야 한다는 사용자 설명 반영.
 
+    양봉/음봉을 가리지 않는다 — 같은 구간 안에서 거래대금이 크게 터진
+    음봉도 물량이 넘어간 지점일 수 있다 (오히려 음봉에서 크게 터지는 게
+    투매/물량 소화 구간일 수 있음).
+
     같은 급등이 이틀에 걸쳐 찍힌 것처럼 바로 붙어있는 지점(merge_gap 이내)은
     거래량이 더 큰 쪽 하나로 합친다.
     """
-    up_idxs = [i for i in range(start, end + 1) if candles[i].color == "up"]
-    if not up_idxs:
-        return []
     peak_vol = max(volumes[i] for i in range(start, end + 1))
     if peak_vol <= 0:
         return []
     threshold = peak_vol * min_frac_of_peak
-    candidates = sorted(i for i in up_idxs if volumes[i] >= threshold)
+    candidates = sorted(i for i in range(start, end + 1) if volumes[i] >= threshold)
 
     merged: List[int] = []
     for i in candidates:
