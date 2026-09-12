@@ -44,7 +44,7 @@ def _build_result(
         criterion_signals = [_signal_to_criterion_signal(s, criterion_text) for s in signals]
         positions = sorted({s.position_desc for s in signals}, key=["과거", "중간", "최근"].index)
         comment = (
-            f"OpenCV 분석 결과 총 {len(signals)}개 구간에서 가격 상승+거래량 폭증 신호가 "
+            f"OpenCV 분석 결과 총 {len(signals)}개 구간에서 물량 털기 의심 신호가 "
             f"발견되었습니다 ({', '.join(positions)})."
         )
     else:
@@ -52,13 +52,13 @@ def _build_result(
             CriterionSignal(
                 criterion=criterion_text,
                 found=False,
-                evidence="OpenCV 분석 결과 조건(양봉 + 직전 대비 거래량·가격 변동폭 급증)을 만족하는 구간을 찾지 못했습니다.",
+                evidence="OpenCV 분석 결과 조건(양봉 + 직전 대비 거래량·가격 변동폭 급증)을 만족하는 물량 털기 의심 구간을 찾지 못했습니다.",
                 price_move_desc="-",
                 volume_move_desc="-",
                 confidence="high",
             )
         ]
-        comment = "OpenCV 분석 결과 가격 상승+거래량 폭증에 해당하는 구간을 찾지 못했습니다."
+        comment = "OpenCV 분석 결과 물량 털기 의심 구간을 찾지 못했습니다."
 
     return ChartAnalysisResult(
         timeframe=timeframe_key,
@@ -74,9 +74,10 @@ def analyze_chart_cv_annotated(
     """analyze_chart_cv()와 같지만, 이미지 입력이면 검출 구간에 동그라미를
     그린 PNG 바이트도 함께 반환한다 (캔들 데이터 입력이면 None).
 
-    현재는 criteria.yaml의 첫 번째 기준(가격 상승+거래량 폭증) 전용이다.
-    이 기준과 다른 새 기준을 daily/min30/min3에 추가하면 별도 로직이
-    필요하다 — agents.analyze_chart()(LLM)로 되돌리거나 새 검출기를 추가.
+    현재는 criteria.yaml의 첫 번째 기준(물량 털기 = 가격 상승+거래량 폭증)
+    전용이다. 이 기준과 다른 새 기준을 daily/min30/min3에 추가하면 별도
+    로직이 필요하다 — agents.analyze_chart()(LLM)로 되돌리거나 새 검출기를
+    추가.
     """
     criterion_text = agent_cfg["criteria"][0]
     annotated_png: Optional[bytes] = None

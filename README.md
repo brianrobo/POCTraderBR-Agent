@@ -13,8 +13,8 @@
   꽂을 수 있습니다. 아래 "데이터 소스 확장" 참고.
 - `chart_agent/agents.py` — `ChartInput` 하나 + 해당 타임프레임 기준으로
   분석하는 LLM(Claude Vision) 에이전트. 화면 캡처(screen)에서만 사용합니다.
-- `chart_agent/cv_breakout.py` — OpenCV로 "가격 상승+거래량 폭증"을 직접
-  검출 (LLM 미사용, 무료·즉시). 캔들/거래량 막대 색상은 키움 종합차트
+- `chart_agent/cv_breakout.py` — OpenCV로 "물량 털기"(가격 상승+거래량
+  폭증)를 직접 검출 (LLM 미사용, 무료·즉시). 캔들/거래량 막대 색상은 키움 종합차트
   기준으로 실측해 맞춰뒀습니다 — 다른 HTS/테마를 쓰면 `RED_*`/`BLUE_*`/
   `PURPLE_*` 색상 범위를 다시 잡아야 합니다.
 - `chart_agent/cv_agent.py` — `cv_breakout`의 검출 결과를 `agents.py`와
@@ -98,7 +98,7 @@ python main.py --daily-candles examples/sample_candles.json --ticker "005930 삼
 
 **단, `screen`(화면 캡처)만** 그렇습니다 — LLM이 기준 문장을 직접 읽고
 판단하기 때문입니다. `daily`/`min30`/`min3`는 OpenCV(`cv_agent.py`)가
-"가격 상승+거래량 폭증" 한 가지만 코드로 직접 계산하므로, criteria.yaml에
+"물량 털기"(가격 상승+거래량 폭증) 한 가지만 코드로 직접 계산하므로, criteria.yaml에
 새 문장을 추가해도 이 세 타임프레임에는 반영되지 않습니다. 이 세
 타임프레임에 다른 종류의 기준을 추가하려면 (a) `cv_breakout.py`에 그
 기준을 계산하는 로직을 추가하거나 (b) 해당 타임프레임을 다시
