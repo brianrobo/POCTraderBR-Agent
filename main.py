@@ -38,6 +38,33 @@ def parse_args():
     return parser.parse_args()
 
 
+def call_anthropic(fn, *args, **kwargs):
+    """anthropic 호출 실패를 트레이스백 대신 안내 메시지로 바꿔서 종료"""
+    try:
+        return fn(*args, **kwargs)
+    except anthropic.RateLimitError as e:
+        print(f"요청이 많습니다. 잠시 후 다시 시도하세요. ({e.message})", file=sys.stderr)
+    except anthropic.AuthenticationError:
+        print("ANTHROPIC_API_KEY가 올바르지 않습니다.", file=sys.stderr)
+    except anthropic.BadRequestError as e:
+        print(f"잘못된 요청입니다: {e.message}", file=sys.stderr)
+    except anthropic.APIStatusError as e:
+        print(f"Claude API 오류 ({e.status_code}): {e.message}", file=sys.stderr)
+    except anthropic.APIConnectionError:
+        print("Claude API에 연결하지 못했습니다. 네트워크를 확인하세요.", file=sys.stderr)
+    except TypeError as e:
+        if "authentication" in str(e).lower():
+            print(
+                "ANTHROPIC_API_KEY가 설정되지 않았습니다. 환경변수를 설정한 뒤 다시 실행하세요 "
+                "(.env.example 참고). daily/min30/min3만 쓰는 경우 OpenCV만 동작하고 이 단계는 "
+                "건너뛸 수 없습니다 — 종합 판단은 항상 Claude를 호출합니다.",
+                file=sys.stderr,
+            )
+        else:
+            raise
+    sys.exit(1)
+
+
 def load_candles(path: str):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -87,11 +114,13 @@ def main():
             results[key] = analyze_chart_cv(key, criteria[key], chart_input)
         else:
             print(f"[{key}] Claude로 분석 중... ({chart_input.kind})")
-            results[key] = analyze_chart(client, key, criteria[key], chart_input, ticker=args.ticker)
+            results[key] = call_anthropic(
+                analyze_chart, client, key, criteria[key], chart_input, ticker=args.ticker
+            )
         print(f"[{key}] 완료 - 신호 발견: {results[key].overall_found}")
 
     print("종합 판단 생성 중...")
-    synthesis = synthesize(client, results, ticker=args.ticker)
+    synthesis = call_anthropic(synthesize, client, results, ticker=args.ticker)
 
     out_path = args.out or f"outputs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     save_report(results, synthesis, out_path, ticker=args.ticker)
