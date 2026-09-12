@@ -255,23 +255,40 @@ def detect_breakouts(
 
 
 def _refine_wicks(
-    candles: List[Candle], raw_red: np.ndarray, raw_blue: np.ndarray, band_top: int, band_bottom: int
+    candles: List[Candle],
+    img: np.ndarray,
+    band_top: int,
+    band_bottom: int,
+    threshold: float = 18.0,
 ) -> None:
-    """윗꼬리/아랫꼬리 복원.
+    """윗꼬리/아랫꼬리 복원 — 색상이 아니라 '밝기'로 찾는다.
 
-    segment_candles()가 쓰는 마스크는 이평선을 지우려고 가로 모폴로지
-    오프닝을 거치는데, 그 과정에서 1~2px짜리 얇은 꼬리도 같이 지워진다.
-    그래서 캔들 하나의 x 범위(이미 몸통 폭으로 확정된 좁은 구간)에서만
-    오프닝을 걸지 않은 원본 마스크를 다시 봐서 실제 고가/저가(꼬리 끝)를
-    복원한다 — 이 좁은 x 범위 안에서는 이평선이 섞여 들어올 위험이 작다.
+    처음엔 색상 마스크(오프닝 안 한 원본)로 꼬리를 복원해봤는데, 실제로는
+    꼬리 선이 안티에일리어싱 때문에 몸통 채우기 색보다 훨씬 옅게(회색
+    배경에 가깝게) 렌더링돼서 엄격한 색상 임계값을 통과하지 못하는 경우가
+    많았다. 대신 몸통 색과 무관하게, 배경보다 확실히 어두운 픽셀이 있는
+    동안 몸통 위/아래로 계속 늘려가는 방식으로 찾는다 — 이 좁은 x 범위
+    (캔들 폭)에서만 스캔하므로 다른 캔들/이평선이 섞여 들어올 위험이 작고,
+    배경 밝기로 돌아오면 바로 멈추므로 근처를 지나는 이평선까지 이어붙는
+    것도 막는다.
     """
+    gray = img.mean(axis=2)
+    bg_level = float(np.median(gray[band_top : band_bottom + 1, :]))
+
     for c in candles:
-        raw = raw_red if c.color == "up" else raw_blue
-        seg = raw[band_top : band_bottom + 1, c.x_start : c.x_end + 1] > 0
-        ys = np.where(seg.any(axis=1))[0]
-        if len(ys):
-            c.range_top = min(c.range_top, band_top + int(ys.min()))
-            c.range_bottom = max(c.range_bottom, band_top + int(ys.max()))
+        col = gray[:, c.x_start : c.x_end + 1]
+        # 평균이 아니라 최솟값 — 꼬리는 캔들 폭 안에서 1~2px만 차지해서,
+        # 나머지 배경 픽셀과 평균 내면 신호가 묻힌다.
+
+        y = c.body_top
+        while y - 1 >= band_top and bg_level - col[y - 1].min() >= threshold:
+            y -= 1
+        c.range_top = min(c.range_top, y)
+
+        y = c.body_bottom
+        while y + 1 <= band_bottom and bg_level - col[y + 1].min() >= threshold:
+            y += 1
+        c.range_bottom = max(c.range_bottom, y)
 
 
 def analyze_image_array(
@@ -295,10 +312,7 @@ def analyze_image_array(
     baseline_y = vol_bottom
 
     candles = segment_candles(red_mask, blue_mask)
-
-    raw_red = cv2.inRange(img, RED_LOWER, RED_UPPER)
-    raw_blue = cv2.inRange(img, BLUE_LOWER, BLUE_UPPER)
-    _refine_wicks(candles, raw_red, raw_blue, candle_top, candle_bottom)
+    _refine_wicks(candles, img, candle_top, candle_bottom)
 
     volumes = volume_heights_for_candles(purple_mask, candles, baseline_y)
     signals = detect_breakouts(
