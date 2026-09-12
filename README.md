@@ -3,9 +3,11 @@
 일봉 / 30분봉 / 3분봉 / 화면 캡처 이미지를 각각 전문화된 Claude 에이전트로
 분석하고, 결과를 종합해서 하나의 리포트로 만드는 도구입니다.
 
-검출 로직이 실제로 어떤 트레이딩 개념("물량 털기")을 잡으려는 건지,
-임계값들이 왜 그렇게 정해졌는지는 [DOMAIN.md](DOMAIN.md) 참고. 지금까지의
-변경 이력은 [HISTORY.md](HISTORY.md).
+이 도구가 최종적으로 판단하려는 4가지 큰 그림(세력 존재 확인/물량 털기
+확인/매집 구간/이평선 정배열-역배열)은
+[.claude/skills/chart-analysis-framework/SKILL.md](.claude/skills/chart-analysis-framework/SKILL.md) 참고.
+그중 "물량 털기" 검출 로직이 실제로 잡으려는 개념과 임계값 근거는
+[DOMAIN.md](DOMAIN.md). 지금까지의 변경 이력은 [HISTORY.md](HISTORY.md).
 
 ## 구조
 
