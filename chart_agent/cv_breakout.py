@@ -254,6 +254,26 @@ def detect_breakouts(
     return signals
 
 
+def _refine_wicks(
+    candles: List[Candle], raw_red: np.ndarray, raw_blue: np.ndarray, band_top: int, band_bottom: int
+) -> None:
+    """윗꼬리/아랫꼬리 복원.
+
+    segment_candles()가 쓰는 마스크는 이평선을 지우려고 가로 모폴로지
+    오프닝을 거치는데, 그 과정에서 1~2px짜리 얇은 꼬리도 같이 지워진다.
+    그래서 캔들 하나의 x 범위(이미 몸통 폭으로 확정된 좁은 구간)에서만
+    오프닝을 걸지 않은 원본 마스크를 다시 봐서 실제 고가/저가(꼬리 끝)를
+    복원한다 — 이 좁은 x 범위 안에서는 이평선이 섞여 들어올 위험이 작다.
+    """
+    for c in candles:
+        raw = raw_red if c.color == "up" else raw_blue
+        seg = raw[band_top : band_bottom + 1, c.x_start : c.x_end + 1] > 0
+        ys = np.where(seg.any(axis=1))[0]
+        if len(ys):
+            c.range_top = min(c.range_top, band_top + int(ys.min()))
+            c.range_bottom = max(c.range_bottom, band_top + int(ys.max()))
+
+
 def analyze_image_array(
     img: np.ndarray, lookback: int = 20, volume_ratio_threshold: float = 3.0
 ) -> Tuple[List[Candle], List[int], List[BreakoutSignal], np.ndarray, int]:
@@ -275,6 +295,11 @@ def analyze_image_array(
     baseline_y = vol_bottom
 
     candles = segment_candles(red_mask, blue_mask)
+
+    raw_red = cv2.inRange(img, RED_LOWER, RED_UPPER)
+    raw_blue = cv2.inRange(img, BLUE_LOWER, BLUE_UPPER)
+    _refine_wicks(candles, raw_red, raw_blue, candle_top, candle_bottom)
+
     volumes = volume_heights_for_candles(purple_mask, candles, baseline_y)
     signals = detect_breakouts(
         [c.color for c in candles],
@@ -521,7 +546,9 @@ def _render_annotations(
 
         for i in find_significant_volume_points(candles, volumes, start_idx, end_idx):
             c = candles[i]
-            _draw_ellipse_around(debug, c.x_start, c.body_top, c.x_end, c.body_bottom, pad=8)
+            # 윗꼬리(고가)까지 포함 — 몸통(종가)보다 더 위까지 찔렀다가 밀린
+            # 부분이 실제로 물량을 던지게 만든 상단이라는 설명 반영
+            _draw_ellipse_around(debug, c.x_start, c.range_top, c.x_end, c.body_bottom, pad=8)
             if volumes[i] > 0:
                 vol_top = baseline_y - volumes[i]
                 _draw_ellipse_around(debug, c.x_start, vol_top, c.x_end, baseline_y, pad=6)
