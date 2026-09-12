@@ -6,6 +6,8 @@ import yaml
 DEFAULT_CRITERIA_PATH = Path(__file__).resolve().parent.parent / "config" / "criteria.yaml"
 
 TIMEFRAME_KEYS = ["daily", "min30", "min3", "screen"]
+CV_CAPABLE_KEYS = ["daily", "min30", "min3"]  # OpenCV(비-LLM)로 판단하는 타임프레임
+CANDLE_CAPABLE_KEYS = CV_CAPABLE_KEYS  # 화면 캡처는 캔들 데이터로 대체 불가
 
 
 def load_criteria(path: Path = DEFAULT_CRITERIA_PATH) -> Dict[str, Any]:

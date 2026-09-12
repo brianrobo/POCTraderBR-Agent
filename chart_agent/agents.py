@@ -2,8 +2,8 @@ from typing import Any, Dict, Optional
 
 import anthropic
 
+from .chart_input import ChartInput
 from .models import ChartAnalysisResult
-from .vision import encode_image
 
 MODEL = "claude-opus-5"
 
@@ -16,8 +16,8 @@ def build_system_prompt(agent_cfg: Dict[str, Any]) -> str:
 
     return (
         f"{role}\n\n"
-        "다음 판단 기준들을 하나씩 확인하고, 첨부된 차트 이미지를 근거로 판단하라. "
-        "차트에 명확히 나타나지 않는 내용은 추측하지 말고 found=false로 표시하라.\n\n"
+        "다음 판단 기준들을 하나씩 확인하고, 제공된 차트 자료(이미지 또는 캔들 데이터)를 "
+        "근거로 판단하라. 근거가 명확하지 않은 내용은 추측하지 말고 found=false로 표시하라.\n\n"
         f"[판단 기준]\n{criteria_block}\n\n"
         "각 기준에 대해 signals 항목을 하나씩 작성하고, "
         "하나 이상의 기준에서 신호가 발견되면 overall_found=true로 설정하라."
@@ -28,15 +28,19 @@ def analyze_chart(
     client: anthropic.Anthropic,
     timeframe_key: str,
     agent_cfg: Dict[str, Any],
-    image_path: str,
+    chart_input: ChartInput,
     ticker: Optional[str] = None,
 ) -> ChartAnalysisResult:
-    """하나의 타임프레임 차트 이미지를 지정된 기준으로 분석"""
+    """하나의 타임프레임 차트 자료(이미지 또는 캔들 데이터)를 지정된 기준으로 분석.
+
+    chart_input이 이미지에서 왔는지 증권사 API 캔들 데이터에서 왔는지는 여기서
+    신경 쓰지 않는다 (ChartInput.content_blocks()/describe()가 흡수).
+    """
     system_prompt = build_system_prompt(agent_cfg)
 
     ticker_note = f"분석 대상 종목: {ticker}\n\n" if ticker else ""
     user_text = (
-        f"{ticker_note}첨부된 {agent_cfg['label']} 차트 이미지를 분석 기준에 따라 평가하라."
+        f"{ticker_note}{chart_input.describe(agent_cfg['label'])}를 분석 기준에 따라 평가하라."
     )
 
     response = client.messages.parse(
@@ -53,7 +57,7 @@ def analyze_chart(
             {
                 "role": "user",
                 "content": [
-                    encode_image(image_path),
+                    *chart_input.content_blocks(),
                     {"type": "text", "text": user_text},
                 ],
             }

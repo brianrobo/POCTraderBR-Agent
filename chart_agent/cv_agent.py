@@ -1,0 +1,93 @@
+"""OpenCV 검출 결과를 LLM 에이전트와 동일한 ChartAnalysisResult로 변환.
+
+daily/min30/min3는 LLM 대신 이 모듈을 쓴다 (비용 없음, 즉시 결과).
+화면 캡처(screen)는 호가창/뉴스 등 이미지 밖 맥락 판단이 필요해서 계속
+LLM(agents.py)을 쓴다.
+"""
+
+from typing import Any, Dict, List
+
+from .chart_input import ChartInput
+from .cv_breakout import (
+    BreakoutSignal,
+    analyze_image,
+    analyze_image_bytes,
+    detect_breakouts_from_ohlcv,
+)
+from .models import ChartAnalysisResult, CriterionSignal
+
+
+def _confidence_from_ratio(ratio: float) -> str:
+    if ratio >= 10:
+        return "high"
+    if ratio >= 5:
+        return "medium"
+    return "low"
+
+
+def _signal_to_criterion_signal(sig: BreakoutSignal, criterion_text: str) -> CriterionSignal:
+    return CriterionSignal(
+        criterion=criterion_text,
+        found=True,
+        evidence=f"{sig.position_desc} 구간 (왼쪽에서 {sig.candle_index + 1}번째 / 전체 {sig.total_candles}개 캔들)",
+        price_move_desc=f"가격 변동폭이 직전 구간 평균 대비 약 {sig.body_ratio:.1f}배",
+        volume_move_desc=f"거래량이 직전 구간 중앙값 대비 약 {sig.volume_ratio:.1f}배",
+        confidence=_confidence_from_ratio(min(sig.body_ratio, sig.volume_ratio)),
+    )
+
+
+def _build_result(
+    timeframe_key: str, criterion_text: str, signals: List[BreakoutSignal]
+) -> ChartAnalysisResult:
+    if signals:
+        criterion_signals = [_signal_to_criterion_signal(s, criterion_text) for s in signals]
+        positions = sorted({s.position_desc for s in signals}, key=["과거", "중간", "최근"].index)
+        comment = (
+            f"OpenCV 분석 결과 총 {len(signals)}개 구간에서 가격 상승+거래량 폭증 신호가 "
+            f"발견되었습니다 ({', '.join(positions)})."
+        )
+    else:
+        criterion_signals = [
+            CriterionSignal(
+                criterion=criterion_text,
+                found=False,
+                evidence="OpenCV 분석 결과 조건(양봉 + 직전 대비 거래량·가격 변동폭 급증)을 만족하는 구간을 찾지 못했습니다.",
+                price_move_desc="-",
+                volume_move_desc="-",
+                confidence="high",
+            )
+        ]
+        comment = "OpenCV 분석 결과 가격 상승+거래량 폭증에 해당하는 구간을 찾지 못했습니다."
+
+    return ChartAnalysisResult(
+        timeframe=timeframe_key,
+        signals=criterion_signals,
+        overall_found=len(signals) > 0,
+        overall_comment=comment,
+    )
+
+
+def analyze_chart_cv(
+    timeframe_key: str, agent_cfg: Dict[str, Any], chart_input: ChartInput
+) -> ChartAnalysisResult:
+    """agents.analyze_chart()와 같은 자리에 쓰는 비-LLM(OpenCV) 버전.
+
+    현재는 criteria.yaml의 첫 번째 기준(가격 상승+거래량 폭증) 전용이다.
+    이 기준과 다른 새 기준을 daily/min30/min3에 추가하면 별도 로직이
+    필요하다 — agents.analyze_chart()(LLM)로 되돌리거나 새 검출기를 추가.
+    """
+    criterion_text = agent_cfg["criteria"][0]
+
+    if chart_input.kind == "image":
+        if chart_input.image_bytes is not None:
+            _, _, signals, _, _ = analyze_image_bytes(chart_input.image_bytes)
+        elif chart_input.image_path:
+            _, _, signals, _, _ = analyze_image(chart_input.image_path)
+        else:
+            raise ValueError("이미지 데이터가 없습니다.")
+    elif chart_input.kind == "candles":
+        signals = detect_breakouts_from_ohlcv(chart_input.candles)
+    else:
+        raise ValueError(f"알 수 없는 chart_input.kind: {chart_input.kind}")
+
+    return _build_result(timeframe_key, criterion_text, signals)
