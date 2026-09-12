@@ -191,6 +191,22 @@
 
   footer{color:var(--text-muted); font-size:12px; text-align:center; padding-top:8px;}
 
+  .zoomable{cursor:zoom-in;}
+  .zoom-hint{
+    position:absolute; bottom:6px; left:6px; font-size:11px; padding:3px 8px;
+    background:rgba(0,0,0,.55); color:#fff; border-radius:6px; pointer-events:none;
+  }
+  .modal-overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,.78); z-index:1000;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .modal-overlay[hidden]{display:none;}
+  .modal-content{display:flex; flex-direction:column; gap:10px; align-items:flex-end; max-width:96vw;}
+  .modal-content img{
+    max-width:96vw; max-height:82vh; border-radius:10px; display:block;
+    box-shadow:0 24px 64px rgba(0,0,0,.55); background:var(--surface);
+  }
+
   @media (max-width:520px){
     header{align-items:flex-start;}
     .controls{width:100%;}
@@ -234,6 +250,13 @@
   <footer>일봉·30분봉·3분봉은 OpenCV로 즉시 판단(무료), 화면 캡처와 종합 판단은 로컬 서버의 ANTHROPIC_API_KEY로 Claude를 호출합니다.</footer>
 </div>
 
+<div class="modal-overlay" id="imageModal" hidden>
+  <div class="modal-content">
+    <button type="button" class="btn-ghost" id="modalClose">닫기 ✕</button>
+    <img id="modalImg" alt="확대 이미지">
+  </div>
+</div>
+
 <script>
 (function(){
   "use strict";
@@ -261,6 +284,21 @@
   var synthesisSection = document.getElementById("synthesis");
   var synthesisBody = document.getElementById("synthesisBody");
   var pastePillsEl = document.getElementById("pasteTargetPills");
+
+  var modalEl = document.getElementById("imageModal");
+  var modalImg = document.getElementById("modalImg");
+  function openModal(src){
+    if (!src) return;
+    modalImg.src = src;
+    modalEl.hidden = false;
+  }
+  function closeModal(){
+    modalEl.hidden = true;
+    modalImg.src = "";
+  }
+  document.getElementById("modalClose").addEventListener("click", closeModal);
+  modalEl.addEventListener("click", function(ev){ if (ev.target === modalEl) closeModal(); });
+  document.addEventListener("keydown", function(ev){ if (ev.key === "Escape" && !modalEl.hidden) closeModal(); });
 
   function showBanner(text){ banner.hidden = false; banner.innerHTML = text; }
   function escapeHtml(s){
@@ -319,10 +357,12 @@
     else pillHtml = '<span class="pill">이미지 대기</span>';
 
     var annotatedUrl = (c.status === "done" && c.result.annotated_image_data_url) || null;
+    var displayUrl = annotatedUrl || c.previewUrl;
     var dzInner;
-    if (annotatedUrl || c.previewUrl) {
-      dzInner = '<img src="' + (annotatedUrl || c.previewUrl) + '" alt="' + a.label + (annotatedUrl ? ' 검출 결과 (동그라미 표시)' : ' 차트 미리보기') + '">' +
+    if (displayUrl) {
+      dzInner = '<img class="zoomable" src="' + displayUrl + '" alt="' + a.label + (annotatedUrl ? ' 검출 결과 (동그라미 표시)' : ' 차트 미리보기') + '">' +
         (annotatedUrl ? '<span class="paste-badge" style="position:absolute;top:6px;left:6px;">검출 결과</span>' : '') +
+        '<span class="zoom-hint">클릭하면 크게 보기</span>' +
         '<button type="button" class="replace" data-action="replace">다시 선택</button>';
     } else {
       dzInner = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M12 4 7 9M12 4l5 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" stroke-linecap="round"/></svg>' +
@@ -375,6 +415,8 @@
     var dz = el.querySelector('[data-action="pick"]');
     dz.addEventListener("click", function(ev){
       setActiveKey(key);
+      if (ev.target.closest('[data-action="replace"]')) { fileInput.click(); return; }
+      if (displayUrl) { openModal(displayUrl); return; }
       fileInput.click();
     });
     dz.addEventListener("focus", function(){ setActiveKey(key); });
@@ -389,9 +431,9 @@
     });
 
     var analyzeBtn = el.querySelector('[data-action="analyze"]');
-    if (analyzeBtn) analyzeBtn.addEventListener("click", function(){ runAnalysis(key); });
+    if (analyzeBtn) analyzeBtn.addEventListener("click", function(){ runAnalysis(key, {openOnComplete: true}); });
     var retryBtn = el.querySelector('[data-action="retry"]');
-    if (retryBtn) retryBtn.addEventListener("click", function(){ runAnalysis(key); });
+    if (retryBtn) retryBtn.addEventListener("click", function(){ runAnalysis(key, {openOnComplete: true}); });
 
     var saveBtn = el.querySelector('[data-action="save-criteria"]');
     if (saveBtn) saveBtn.addEventListener("click", function(){ saveCriteria(key, el); });
@@ -428,7 +470,7 @@
     runAllBtn.disabled = !ORDER.some(function(k){ return cards[k].file; });
   }
 
-  function runAnalysis(key){
+  function runAnalysis(key, opts){
     var c = cards[key];
     if (!c.file) return Promise.resolve();
     c.status = "analyzing"; c.error = null;
@@ -446,6 +488,9 @@
       })
       .then(function(data){
         c.result = data; c.status = "done";
+        if (opts && opts.openOnComplete && data.annotated_image_data_url) {
+          openModal(data.annotated_image_data_url);
+        }
       })
       .catch(function(e){
         c.status = "error"; c.error = e.message || "분석에 실패했습니다.";
@@ -458,7 +503,7 @@
 
   function runAll(){
     var todo = ORDER.filter(function(k){ return cards[k].file && cards[k].status !== "analyzing"; });
-    return Promise.all(todo.map(runAnalysis));
+    return Promise.all(todo.map(function(k){ return runAnalysis(k); }));
   }
 
   function maybeSynthesize(){
