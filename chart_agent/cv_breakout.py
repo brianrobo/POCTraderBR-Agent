@@ -6,7 +6,8 @@
 색상(이 사용자의 캡처 화면에서 실측):
   - 양봉(빨강): RGB 약 (216-230, 20-30, 10-25)
   - 음봉(파랑): RGB 약 (10-40, 80-95, 165-195)
-  - 거래대금 막대(보라): RGB 약 (95-115, 90-105, 130-150)
+  - 거래대금 막대(보라): RGB 약 (95-115, 90-105, 130-150) — 테마에 따라
+    분홍/마젠타(RGB 약 255,0,255)로 나오는 경우도 있어서 같이 인식한다.
   - 이동평균선(분홍5/파랑10/주황20/초록60/검정120)은 1~2px로 얇아서
     가로 방향 모폴로지 오프닝으로 제거하고 두꺼운 캔들 몸통/막대만 남긴다.
 """
@@ -45,6 +46,11 @@ BLUE_UPPER = np.array([220, 130, 70])
 
 PURPLE_LOWER = np.array([120, 80, 85])
 PURPLE_UPPER = np.array([170, 120, 130])
+
+# 거래대금 막대가 보라색 대신 분홍/마젠타(255,0,255)로 나오는 테마(예: "정배열" 등
+# 다른 화면 구성)도 있어서, 거래량 막대는 두 색 범위를 OR로 합쳐서 찾는다.
+PINK_LOWER = np.array([200, 0, 200])
+PINK_UPPER = np.array([255, 90, 255])
 
 OPEN_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))  # 얇은 이평선 제거용
 MIN_CANDLE_WIDTH = 3  # 이보다 얇은 색상 그룹은 텍스트/노이즈로 간주해 제외
@@ -91,8 +97,36 @@ class BreakoutSignal:
         return "과거"
 
 
+def _remove_horizontal_lines(mask: np.ndarray, max_row_frac: float = 0.3) -> np.ndarray:
+    """전체 폭의 상당 부분을 가로지르는 행(예: 현재가 기준선처럼 캔들과
+    같은 색으로 그려지는 수평 참조선)을 지운다.
+
+    캔들 하나하나는 몇 px 폭이라 아무리 밀집해도 한 행이 전체 폭의
+    max_row_frac 이상을 채우는 일은 없다 — 그 이상이면 수평선으로 보고
+    그 행 전체를 비운다.
+    """
+    width = mask.shape[1]
+    row_counts = (mask > 0).sum(axis=1)
+    bad_rows = row_counts > width * max_row_frac
+    if bad_rows.any():
+        mask = mask.copy()
+        mask[bad_rows] = 0
+    return mask
+
+
 def _mask(img_bgr: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
     mask = cv2.inRange(img_bgr, lower, upper)
+    mask = _remove_horizontal_lines(mask)
+    return cv2.morphologyEx(mask, cv2.MORPH_OPEN, OPEN_KERNEL)
+
+
+def _volume_mask(img_bgr: np.ndarray) -> np.ndarray:
+    """거래대금 막대 색상은 테마에 따라 보라색 또는 분홍/마젠타로 나온다 —
+    두 범위를 OR로 합쳐서 찾는다."""
+    mask = cv2.inRange(img_bgr, PURPLE_LOWER, PURPLE_UPPER) | cv2.inRange(
+        img_bgr, PINK_LOWER, PINK_UPPER
+    )
+    mask = _remove_horizontal_lines(mask)
     return cv2.morphologyEx(mask, cv2.MORPH_OPEN, OPEN_KERNEL)
 
 
@@ -310,7 +344,7 @@ def analyze_image_array(
 ) -> Tuple[List[Candle], List[int], List[BreakoutSignal], np.ndarray, int]:
     red_mask_full = _mask(img, RED_LOWER, RED_UPPER)
     blue_mask_full = _mask(img, BLUE_LOWER, BLUE_UPPER)
-    purple_mask_full = _mask(img, PURPLE_LOWER, PURPLE_UPPER)
+    purple_mask_full = _volume_mask(img)
 
     vol_top, vol_bottom = _find_dense_band(purple_mask_full)
     candle_top, candle_bottom = _find_dense_band(red_mask_full | blue_mask_full)
@@ -442,85 +476,6 @@ def find_peak_index(candles: List[Candle], volumes: List[float], start: int, end
     return max(range(start, end + 1), key=lambda i: volumes[i])
 
 
-@dataclass
-class RetestSignal:
-    """물량이 터진 가격대를 이후에 다시 찍고(재상승) 내려간(하락) 정황.
-
-    개미들에게 '본전' 근처까지 가격을 다시 올려줘서 물량을 던지게 만들고
-    (매집), 그 직후 가격이 다시 빠지는 패턴 — 첫 거래량 폭증만으로는 알 수
-    없고, 그 뒤 캔들들을 봐야 확인된다.
-    """
-
-    peak_index: int
-    retest_index: int
-    decline_index: int
-
-
-def detect_retest_and_reject(
-    candles: List[Candle],
-    volumes: List[float],
-    clusters: List[Tuple[int, int]],
-    pullback_frac: float = 0.03,
-    tolerance_frac: float = 0.02,
-    max_lookahead: int = 90,
-    decline_window: int = 15,
-) -> List[RetestSignal]:
-    """각 물량 폭증 구간(cluster)의 최대 거래량 캔들(peak) 가격대를,
-    이후 캔들이 (한 번 눌렸다가) 다시 찍고 나서 내려가는지 확인한다.
-
-    픽셀 y좌표만 있고 실제 가격 축 눈금은 모르므로, 캔들 창 전체 높이에 대한
-    비율로 '의미 있는 되돌림 폭(pullback_frac)'과 '같은 가격대로 볼 허용
-    오차(tolerance_frac)'를 정한다.
-    """
-    if not candles:
-        return []
-
-    pane_top = min(c.range_top for c in candles)
-    pane_bottom = max(c.range_bottom for c in candles)
-    pane_height = max(pane_bottom - pane_top, 1)
-    min_move = max(pane_height * pullback_frac, 5)
-    tol = max(pane_height * tolerance_frac, 4)
-
-    results = []
-    for raw_start, raw_end in clusters:
-        start, end = raw_start, extend_cluster_to_breakdown(candles, volumes, raw_start, raw_end, pullback_frac)
-        peak_idx = find_peak_index(candles, volumes, start, end)
-        # 기준 가격은 거래량 최대 캔들의 몸통이 아니라, 그 구간에서 실제로
-        # 찍은 최고가('가격 상단' = 전고 돌파 지점) — 변동성이 거기서 나온다는
-        # 사용자 설명 반영.
-        zone_level = min(candles[i].range_top for i in range(start, end + 1))
-        zone_top = zone_bottom = zone_level
-
-        pulled_back = False
-        retest_idx = None
-        limit = min(end + 1 + max_lookahead, len(candles))
-        for j in range(end + 1, limit):
-            c = candles[j]
-            if not pulled_back:
-                if c.body_bottom > zone_bottom + min_move:  # 가격이 그 가격대 아래로 확실히 빠짐
-                    pulled_back = True
-                continue
-            if zone_top - tol <= c.range_top <= zone_bottom + tol:  # 그 가격대를 다시 찍음
-                retest_idx = j
-                break
-
-        if retest_idx is None:
-            continue
-
-        retest_low = candles[retest_idx].range_bottom
-        decline_idx = None
-        limit2 = min(retest_idx + 1 + decline_window, len(candles))
-        for k in range(retest_idx + 1, limit2):
-            if candles[k].body_top > retest_low - min_move * 0.3:  # 재접근 캔들의 저가 밑으로 이탈
-                decline_idx = k
-                break
-
-        if decline_idx is not None:
-            results.append(RetestSignal(peak_index=peak_idx, retest_index=retest_idx, decline_index=decline_idx))
-
-    return results
-
-
 def find_significant_volume_points(
     candles: List[Candle],
     volumes: List[float],
@@ -556,7 +511,7 @@ def find_significant_volume_points(
     return merged
 
 
-def _add_legend(img: np.ndarray, show_retest: bool, show_accum: bool) -> np.ndarray:
+def _add_legend(img: np.ndarray, show_accum: bool) -> np.ndarray:
     """이미지 맨 위에 마크 설명을 붙인다 (한글이라 Pillow로 렌더링).
 
     기존 내용을 가리지 않도록 캔버스 자체를 위로 늘려서 그 여백에 그린다.
@@ -572,8 +527,6 @@ def _add_legend(img: np.ndarray, show_retest: bool, show_accum: bool) -> np.ndar
     cy = legend_h // 2
 
     items = [("circle", (255, 230, 0), ": 물량 털기")]
-    if show_retest:
-        items.append(("circle", (255, 140, 0), ": 재접근 후 하락"))
     if show_accum:
         items.append(("box", (0, 160, 200), ": 매집 구간"))
 
@@ -671,14 +624,12 @@ def _render_annotations(
     signals: List[BreakoutSignal],
     baseline_y: int,
     cluster_gap: int,
-) -> Tuple[np.ndarray, bool, bool]:
+) -> Tuple[np.ndarray, bool]:
     debug = img.copy()
     raw_clusters = cluster_signal_indices(signals, gap=cluster_gap)
     extended_clusters = [
         (s, extend_cluster_to_breakdown(candles, volumes, s, e)) for s, e in raw_clusters
     ]
-    retests = detect_retest_and_reject(candles, volumes, raw_clusters)
-    retest_by_peak = {r.peak_index: r for r in retests}
 
     has_accum = False
     prev_end = 0
@@ -717,8 +668,6 @@ def _render_annotations(
         prev_end = end_idx + 1
 
     for start_idx, end_idx in extended_clusters:
-        peak_idx = find_peak_index(candles, volumes, start_idx, end_idx)
-
         for i in find_significant_volume_points(candles, volumes, start_idx, end_idx):
             c = candles[i]
             # 윗꼬리(고가)까지 포함 — 몸통(종가)보다 더 위까지 찔렀다가 밀린
@@ -728,16 +677,7 @@ def _render_annotations(
                 vol_top = baseline_y - volumes[i]
                 _draw_ellipse_around(debug, c.x_start, vol_top, c.x_end, baseline_y, pad=6)
 
-        retest = retest_by_peak.get(peak_idx)
-        if retest:
-            r = candles[retest.retest_index]
-            zone_y = min(candles[i].range_top for i in range(start_idx, end_idx + 1))
-            cv2.line(debug, (candles[end_idx].x_end, zone_y), (r.x_start, zone_y), (0, 165, 255), 1, cv2.LINE_AA)
-            _draw_ellipse_around(
-                debug, r.x_start, r.range_top, r.x_end, r.range_bottom, pad=8, color=(0, 140, 255)
-            )
-
-    return debug, bool(retests), has_accum
+    return debug, has_accum
 
 
 def draw_debug(
@@ -749,14 +689,11 @@ def draw_debug(
     out_path: str,
     cluster_gap: int = 12,
 ) -> None:
-    """검출된 '물량 털기'(가격 상승+거래량 폭증) 의심 구간을 원본 이미지 위에 동그라미로 표시.
-
-    구간별 최대 거래량 캔들(실제 물량이 터진 가격)에 작은 동그라미를 치고,
-    그 가격대를 이후에 다시 찍고 내려가는 재접근-하락 정황이 있으면 주황색
-    동그라미와 연결선으로 함께 표시한다. 맨 위에는 마크 범례를 붙인다.
+    """검출된 '물량 털기'(가격 상승+거래량 폭증) 의심 구간과 매집 구간을
+    원본 이미지 위에 표시. 맨 위에는 마크 범례를 붙인다.
     """
-    debug, has_retest, has_accum = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
-    debug = _add_legend(debug, has_retest, has_accum)
+    debug, has_accum = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
+    debug = _add_legend(debug, has_accum)
     cv2.imwrite(out_path, debug)
 
 
@@ -769,8 +706,8 @@ def draw_debug_bytes(
     cluster_gap: int = 12,
 ) -> bytes:
     """draw_debug()와 동일하지만 PNG 바이트로 반환 (웹 응답에 바로 embed할 때 사용)"""
-    debug, has_retest, has_accum = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
-    debug = _add_legend(debug, has_retest, has_accum)
+    debug, has_accum = _render_annotations(img, candles, volumes, signals, baseline_y, cluster_gap)
+    debug = _add_legend(debug, has_accum)
     ok, buf = cv2.imencode(".png", debug)
     if not ok:
         raise ValueError("이미지 인코딩에 실패했습니다.")
