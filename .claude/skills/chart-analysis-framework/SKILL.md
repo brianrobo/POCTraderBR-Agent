@@ -28,8 +28,8 @@ description: Use this skill whenever discussing, planning, or implementing chart
 - 그 구간 안에서 양봉/음봉 상관없이 거래량이 큰 지점을 전부 개별 표시
 - 종가가 아니라 실제 고가(윗꼬리)까지 포함해서 표시
 
-아직 실전 검증이 부족한 부분: 재접근-하락(전고 돌파 후 하락) 판정 로직
-(`detect_retest_and_reject`) — 허용 오차 등 튜닝 필요.
+재접근-하락(전고 돌파 후 하락) 판정 로직은 시도했다가 검증 부족 +
+사용자 요청으로 제거함 (git 히스토리에 남아있음, DOMAIN.md 참고).
 
 ## 3. 세력의 매집 구간
 **상태: 1차 구현됨** — `chart_agent/cv_breakout.py`의 `find_accumulation_zone()`,

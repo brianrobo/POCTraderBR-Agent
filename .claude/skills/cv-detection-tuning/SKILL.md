@@ -1,12 +1,12 @@
 ---
 name: cv-detection-tuning
-description: Use this skill whenever changing pixel-level detection logic in chart_agent/cv_breakout.py (colors, thresholds, wick/body extraction, clustering, retest logic) in this project (POCTraderBR_TradingAgent). Defines the required workflow — real screenshots plus a visual before/after — before any such change is considered done or committed.
+description: Use this skill whenever changing pixel-level detection logic in chart_agent/cv_breakout.py (colors, thresholds, wick/body extraction, clustering, zone detection) in this project (POCTraderBR_TradingAgent). Defines the required workflow — real screenshots plus a visual before/after — before any such change is considered done or committed.
 ---
 
 # OpenCV 검출 로직 튜닝 워크플로우
 
 `chart_agent/cv_breakout.py`의 색상/픽셀 임계값, 몸통·꼬리 추출, 클러스터링,
-재접근-하락 판정 등을 건드릴 때는 반드시 아래 절차를 따른다. 설명만으로
+매집 구간 판정 등을 건드릴 때는 반드시 아래 절차를 따른다. 설명만으로
 "고쳤다"고 판단하지 않는다 — 이 프로젝트에서 여러 번, 코드상으로는 맞아
 보이던 수정이 실제 캡처로 확인하고 나서야 틀린 게 드러났다.
 
@@ -18,8 +18,8 @@ description: Use this skill whenever changing pixel-level detection logic in cha
    캡처를 요청한다. 색상/안티에일리어싱 특성은 실제 캡처에서만 정확히
    재현된다.
 2. **수정 후 그 이미지로 직접 돌려서 디버그 시각화를 만든다**
-   (`draw_debug()`로 PNG 생성 — 검출된 캔들/거래량/재접근 지점을 원본
-   위에 동그라미로 표시).
+   (`draw_debug()`로 PNG 생성 — 검출된 물량 털기/매집 구간 지점을 원본
+   위에 표시).
 3. **그 이미지를 `SendUserFile`로 사용자에게 보낸다.** 텍스트로 "이렇게
    고쳤습니다"라고만 설명하고 넘어가지 않는다.
 4. 사용자가 실제로 보면서 맞는지 확인(또는 특정 지점을 짚어서 반박)하게
